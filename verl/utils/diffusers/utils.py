@@ -19,9 +19,29 @@ from verl.utils.device import get_device_name
 from verl.workers.config import DiffusersModelConfig
 
 
+def _is_qwen_image_model(model_config: DiffusersModelConfig) -> bool:
+    paths = [
+        getattr(model_config, "path", None),
+        getattr(model_config, "local_path", None),
+        getattr(model_config, "tokenizer_path", None),
+        getattr(model_config, "local_tokenizer_path", None),
+    ]
+    for path in paths:
+        if not isinstance(path, str):
+            continue
+        normalized = path.replace("\\", "/").lower()
+        if normalized.endswith("qwen-image") or "/qwen-image/" in normalized:
+            return True
+        # HuggingFace local cache path style:
+        # .../models--Qwen--Qwen-Image/snapshots/<sha>/
+        if "models--qwen--qwen-image" in normalized:
+            return True
+    return False
+
+
 def set_timesteps(scheduler: SchedulerMixin, model_config: DiffusersModelConfig):
     # TODO (mike): using path name is not robust, refactor later
-    if model_config.path.endswith("Qwen-Image"):
+    if _is_qwen_image_model(model_config):
         from diffusers.pipelines.qwenimage.pipeline_qwenimage import calculate_shift
 
         vae_scale_factor = 8
@@ -40,4 +60,6 @@ def set_timesteps(scheduler: SchedulerMixin, model_config: DiffusersModelConfig)
         )
         scheduler.set_timesteps(num_inference_steps, device=get_device_name(), sigmas=sigmas, mu=mu)
     else:
-        raise NotImplementedError("unsupported model for custom scheduler settings")
+        raise NotImplementedError(
+            f"unsupported model for custom scheduler settings: path={model_config.path}, local_path={model_config.local_path}"
+        )

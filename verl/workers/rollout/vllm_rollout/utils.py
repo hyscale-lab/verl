@@ -18,6 +18,7 @@ import logging
 import os
 import platform
 import signal
+import sys
 import threading
 from multiprocessing import shared_memory
 from types import MethodType
@@ -25,7 +26,36 @@ from typing import Any, Callable, Literal, TypedDict, get_args
 
 import torch
 import zmq
-from vllm_omni.diffusion.worker.gpu_worker import CustomPipelineWorkerExtension
+
+# vllm-omni may import `is_gguf` from vllm, but newer vllm versions removed it.
+# Provide a compatibility shim before importing vllm_omni.
+try:
+    from vllm.attention.backends import registry as _vllm_attn_registry
+    from vllm.lora import models as _vllm_lora_models
+    from vllm.transformers_utils import gguf_utils as _vllm_gguf_utils
+
+    # vllm-omni expects this module path in some versions.
+    sys.modules.setdefault("vllm.v1.attention.backends.registry", _vllm_attn_registry)
+    # vllm-omni may import LoRAModel from the old module path.
+    sys.modules.setdefault("vllm.lora.lora_model", _vllm_lora_models)
+
+    if not hasattr(_vllm_gguf_utils, "is_gguf"):
+
+        def _is_gguf(model: str) -> bool:
+            return isinstance(model, str) and model.lower().endswith(".gguf")
+
+        _vllm_gguf_utils.is_gguf = _is_gguf
+except Exception:
+    # Defer import errors to downstream modules for clearer diagnostics.
+    pass
+
+try:
+    from vllm_omni.diffusion.worker.gpu_worker import CustomPipelineWorkerExtension
+except ModuleNotFoundError:
+    # Newer vllm-omni versions removed gpu_worker.py.
+    # Keep a compatible base type so the extension class below still loads.
+    class CustomPipelineWorkerExtension:  # type: ignore[no-redef]
+        pass
 
 from verl.utils.device import get_torch_device, is_npu_available
 from verl.utils.vllm import OmniTensorLoRARequest, TensorLoRARequest, VLLMHijack, VLLMOmniHijack

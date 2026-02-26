@@ -13,6 +13,7 @@
 # limitations under the License.
 import argparse
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -155,12 +156,25 @@ class vLLMOmniHttpServer:
         args: tuple = (),
         kwargs: dict[str, Any] | None = None,
     ):
-        await self.engine.collective_rpc(
-            method=method,
-            timeout=timeout,
-            args=args,
-            kwargs=kwargs,
-        )
+        kwargs = kwargs or {}
+        # vllm-omni API changed in newer versions:
+        # - old: engine.collective_rpc(method=..., timeout=..., args=..., kwargs=...)
+        # - new: direct async methods, e.g. engine.wake_up(tags=...), engine.sleep(level=...)
+        if hasattr(self.engine, "collective_rpc"):
+            await self.engine.collective_rpc(
+                method=method,
+                timeout=timeout,
+                args=args,
+                kwargs=kwargs,
+            )
+            return
+
+        if callable(method):
+            await method(*args, **kwargs)
+            return
+
+        fn = getattr(self.engine, method)
+        await fn(*args, **kwargs)
 
     async def launch_server(self, master_address: str = None, master_port: int = None, dp_rpc_port: int = None):
         if self.node_rank != 0:
@@ -360,7 +374,14 @@ class vLLMOmniHttpServer:
         # TODO (mike): support parsing engine config from CLI
         engine_client = AsyncOmni(**kwargs)
         app = build_app(args)
-        await omni_init_app_state(engine_client, None, app.state, args)
+        # vllm-omni changed omni_init_app_state signature across versions.
+        # Support both:
+        # - (engine_client, middlewares, state, args)
+        # - (engine_client, state, args)
+        if len(inspect.signature(omni_init_app_state).parameters) >= 4:
+            await omni_init_app_state(engine_client, None, app.state, args)
+        else:
+            await omni_init_app_state(engine_client, app.state, args)
 
         self.engine = engine_client
         self._server_port, self._server_task = await run_unvicorn(app, args, self._server_address)

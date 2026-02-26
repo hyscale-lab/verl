@@ -26,6 +26,7 @@ When working with Megatron:
 - After inference, all the parameters that doesn't belong to this pp rank is freed.
 """
 
+import asyncio
 import gc
 import logging
 import os
@@ -134,7 +135,17 @@ class ServerAdapter(BaseRollout):
             self.server_handle = ray.get_actor(f"vllm_server_{self.replica_rank}_{self.node_rank}")
 
         future = self.server_handle.collective_rpc.remote(method, timeout=timeout, args=args, kwargs=kwargs)
-        return future if non_block else await future
+        if non_block:
+            return future
+
+        rpc_timeout = timeout if timeout is not None else float(os.getenv("VERL_VLLM_RPC_TIMEOUT_S", "1800"))
+        try:
+            return await asyncio.wait_for(future, timeout=rpc_timeout)
+        except TimeoutError as e:
+            raise TimeoutError(
+                f"Timed out waiting for vLLM rpc method `{method}` after {rpc_timeout}s. "
+                "This usually means rollout server init/wake_up is stuck."
+            ) from e
 
     async def resume(self, tags: list[str]):
         """Resume rollout weights or kv cache in GPU memory.
